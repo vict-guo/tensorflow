@@ -99,6 +99,7 @@ struct EngineInfo {
         maximum_cached_engines(0),
         precision_mode(TrtPrecisionMode::FP32),
         use_calibration(true),
+        store_calibration_cache(false),
         allow_build_at_runtime(true) {}
 
   string engine_name;
@@ -117,6 +118,7 @@ struct EngineInfo {
   int maximum_cached_engines;
   TrtPrecisionMode precision_mode;
   bool use_calibration;
+  bool store_calibration_cache;
   bool allow_build_at_runtime;
 };
 

@@ -462,6 +462,7 @@ Status CreateTRTNode(const ConversionParams& params,
       .Attr("max_batch_size", max_batch_size)
       .Attr("precision_mode", prec_string)
       .Attr("use_calibration", info.use_calibration)
+      .Attr("store_calibration_cache", info.store_calibration_cache)
       .Attr("_use_implicit_batch", params.use_implicit_batch)
       .Attr("_allow_build_at_runtime", info.allow_build_at_runtime)
       .Attr("OutT", out_types);
@@ -798,6 +799,7 @@ Status ConvertAfterShapes(const ConversionParams& params) {
 
     curr_engine.engine_type = GetEngineType(params);
     curr_engine.use_calibration = params.use_calibration;
+    curr_engine.store_calibration_cache = params.store_calibration_cache;
     // Building cuda engines for INT8 without calibration and without dynamic
     // range info cause TRT failure. Avoid this situation by setting the
     // precision to FP16.

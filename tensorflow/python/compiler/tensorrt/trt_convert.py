@@ -128,7 +128,8 @@ def supported_profile_strategies():
 class TrtConversionParams(
     collections.namedtuple("TrtConversionParams", [
         "max_workspace_size_bytes", "precision_mode", "minimum_segment_size",
-        "maximum_cached_engines", "use_calibration", "allow_build_at_runtime"
+        "maximum_cached_engines", "use_calibration", "allow_build_at_runtime",
+        "store_calibration_cache"
     ])):
   """Parameters that are used for TF-TRT conversion.
 
@@ -167,11 +168,12 @@ class TrtConversionParams(
               minimum_segment_size=3,
               maximum_cached_engines=1,
               use_calibration=True,
-              allow_build_at_runtime=True):
+              allow_build_at_runtime=True,
+              store_calibration_cache=False):
     return super(TrtConversionParams,
                  cls).__new__(cls, max_workspace_size_bytes, precision_mode,
                               minimum_segment_size, maximum_cached_engines,
-                              use_calibration, allow_build_at_runtime)
+                              use_calibration, allow_build_at_runtime, store_calibration_cache)
 
 
 DEFAULT_TRT_CONVERSION_PARAMS = TrtConversionParams()
@@ -331,6 +333,8 @@ def _get_tensorrt_rewriter_config(conversion_params,
       "maximum_cached_engines"].i = conversion_params.maximum_cached_engines
   optimizer.parameter_map[
       "use_calibration"].b = conversion_params.use_calibration
+  optimizer.parameter_map[
+      "store_calibration_cache"].b = conversion_params.store_calibration_cache
   optimizer.parameter_map["is_dynamic_op"].b = is_dynamic_op
   optimizer.parameter_map[
       "allow_build_at_runtime"].b = conversion_params.allow_build_at_runtime
@@ -1111,6 +1115,10 @@ class TrtGraphConverterV2(object):
                        "calibration is needed")
     if (not self._need_calibration and calibration_input_fn):
       raise ValueError("Should not specify calibration_input_fn because INT8 "
+                       "calibration is not needed")
+
+    if (not self._need_calibration and  self._conversion_params.store_calibration_cache):
+        raise ValueError("Should not specify store_calibration_cache because INT8 "
                        "calibration is not needed")
 
     self._saved_model = load.load(self._input_saved_model_dir,

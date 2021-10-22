@@ -261,6 +261,8 @@ class TRTEngineOp : public AsyncOpKernel {
   // could be unknown. During inference time this information is not available
   // otherwise (all shapes are known (concrete) shapes when we run inference).
   std::vector<PartialTensorShape> input_partial_shapes_;
+
+  bool store_calibration_cache_;
 };
 
 #define TYPECASE(dt, X, Y)                                    \
@@ -402,6 +404,8 @@ TRTEngineOp::TRTEngineOp(OpKernelConstruction* context)
                  TrtPrecisionModeFromName(precision_string, &precision_mode_));
   OP_REQUIRES_OK(context,
                  context->GetAttr("use_calibration", &use_calibration_));
+  OP_REQUIRES_OK(context,
+		  context->GetAttr("store_calibration_cache", &store_calibration_cache_));
   OP_REQUIRES_OK(context,
                  context->GetAttr("input_shapes", &input_partial_shapes_));
   auto status =
@@ -1285,11 +1289,13 @@ Status TRTEngineOp::AllocateCalibrationResources(
       // dump it out during conversion for TF 2.0.
       mutex_lock lock(this->engine_mutex_);
       this->calibrator_ = std::move(cres->calibrator_);
-      ExecutionContext context = ExecutionContext::Create(cres->engine_.get());
-      cache_res->cache_.emplace(
-          shapes, absl::make_unique<EngineContext>(std::move(cres->engine_),
-                                                   std::move(context)));
-    }
+      if (!store_calibration_cache_) {
+        ExecutionContext context = ExecutionContext::Create(cres->engine_.get());
+        cache_res->cache_.emplace(
+            shapes, absl::make_unique<EngineContext>(std::move(cres->engine_),
+                                                     std::move(context)));
+        }
+      }
 
     VLOG(1) << "Calibration loop terminated " << this->name();
   }));

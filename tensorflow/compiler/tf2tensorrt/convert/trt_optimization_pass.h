@@ -46,6 +46,7 @@ class TRTOptimizationPass : public grappler::CustomGraphOptimizer {
         max_cached_batches_(1),
         max_workspace_size_bytes_(256LL << 20),
         use_calibration_(true),
+        store_calibration_cache_(true),
         use_implicit_batch_(true),
         profile_strategy_(ProfileStrategy::kRange),
         allow_build_at_runtime_(true) {
@@ -77,6 +78,7 @@ class TRTOptimizationPass : public grappler::CustomGraphOptimizer {
   int max_cached_batches_;
   int64_t max_workspace_size_bytes_;
   bool use_calibration_;
+  bool store_calibration_cache_;
   bool use_implicit_batch_;
   ProfileStrategy profile_strategy_;
   bool allow_build_at_runtime_;

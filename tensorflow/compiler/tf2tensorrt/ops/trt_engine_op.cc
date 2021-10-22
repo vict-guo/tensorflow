@@ -42,6 +42,7 @@ REGISTER_OP("TRTEngineOp")
     .Attr("precision_mode: {'FP32', 'FP16', 'INT8'}")
     .Attr("calibration_data: string = ''")
     .Attr("use_calibration: bool = true")
+    .Attr("store_calibration_cache: bool = false")
     .Input("in_tensor: InT")
     .Output("out_tensor: OutT")
     // TODO(jie): TF requires concrete output shape for concrete input shapes.

@@ -48,6 +48,7 @@ struct ConversionParams {
   // maximum number of cached engines
   int max_cached_engines = 1;
   bool use_calibration = true;
+  bool store_calibration_cache = false;
   bool use_implicit_batch = true;
   ProfileStrategy profile_strategy = ProfileStrategy::kRange;
   bool allow_build_at_runtime = true;

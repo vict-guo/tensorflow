@@ -228,6 +228,9 @@ Status TRTOptimizationPass::Init(
   if (params.count("use_calibration")) {
     use_calibration_ = params.at("use_calibration").b();
   }
+  if (params.count("store_calibration_cache")) {
+    store_calibration_cache_ = params.at("store_calibration_cache").b();
+  }
   if (params.count("trt_logger")) {
     trt_logger_name_ = params.at("trt_logger").s();
   }
@@ -405,6 +408,7 @@ Status TRTOptimizationPass::Optimize(grappler::Cluster* cluster,
   cp.is_dyn_op = is_dynamic_op_;
   cp.max_cached_engines = max_cached_batches_;
   cp.use_calibration = use_calibration_;
+  cp.store_calibration_cache = store_calibration_cache_;
   cp.use_implicit_batch = use_implicit_batch_;
   cp.profile_strategy = profile_strategy_;
   cp.allow_build_at_runtime = allow_build_at_runtime_;
