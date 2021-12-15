@@ -312,6 +312,26 @@ void TrtShapeOptimizationProfile::InitProfiles(
   }
 }
 
+void TrtShapeOptimizationProfile::InitCalibProfile(
+    const std::vector<TensorShape>& shapes) {
+  VLOG(1) << "Collected shape(s) " << DebugString(shapes) << " for "
+          << " calibration profile.";
+  auto shape_vec = shapes;
+  if (!shape_vec.empty()) {
+    std::vector<nvinfer1::Dims> dimvec = GetDimVec(shape_vec);
+    dimvec.insert(dimvec.end(), actual_shape_values_.begin(),
+                  actual_shape_values_.end());
+    VLOG(2) << "Initializing calibration optimization profile config with "
+            << "min=opt=max " << DebugString(dimvec);
+
+    OptimizationProfileConfig profConfig{dimvec, dimvec, dimvec};
+    calib_profiles_ = std::move(profConfig);
+  }
+  else {
+    VLOG(2) << "Failed to initialize calibration optimization profile.";
+  }
+}
+
 Status TrtShapeOptimizationProfile::AddProfiles(
     nvinfer1::IBuilder* builder, nvinfer1::IBuilderConfig* config,
     const nvinfer1::INetworkDefinition* network) {
@@ -345,6 +365,30 @@ Status TrtShapeOptimizationProfile::AddProfiles(
     return errors::Internal("Failure in adding an optimization profile.");
   }
   need_profiles_ = config->getNbOptimizationProfiles() > 0;
+
+ // Create optimization profile for calibration if necessary
+  if (!calib_profiles_.min.empty()) {
+    VLOG(2)<<"INSIDE CALIBRATION FOR DYNAMIC SHAPE";
+    auto* calibProfile = builder->createOptimizationProfile();
+    Status status = calib_profiles_.SetDimensions(network, calibProfile);
+    if (!status.ok()) {
+      return status;
+    }
+    bool result = false;
+    if (calibProfile->isValid()) {
+      result = config->setCalibrationProfile(calibProfile);
+    }
+    if (result) {
+      VLOG(2) << "Added calibration optimization profile " << calib_profiles_.DebugString()
+              << " to builder config.";
+    } else {
+      VLOG(2)<<"FAILED TO ADD PROFILE";
+      LOG(ERROR) << "Failed to add calibration optimization profile "
+                 << calib_profiles_.DebugString()
+                 << ". This usually happens when profile is invalid.";
+    }
+  }
+
   // Update the the mask that flag shape tensors. The network is known now,
   // the mask will be correct.
   SetShapeTensorMask(network);

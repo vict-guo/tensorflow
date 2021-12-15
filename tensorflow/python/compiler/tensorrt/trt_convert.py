@@ -1057,6 +1057,8 @@ class TrtGraphConverterV2(object):
         (conversion_params.precision_mode == TrtPrecisionMode.INT8.lower())) and
                               conversion_params.use_calibration)
 
+    self._calibration_input_fn = None
+
     self._converted = False
     self._build_called_once = False
 
@@ -1126,6 +1128,25 @@ class TrtGraphConverterV2(object):
         func.structured_input_signature)
     return rebuilt_func
 
+  def _execute_calibration(self, calibration_input_fn):
+    for inp in calibration_input_fn():
+      if isinstance(inp, dict):
+        self._converted_func(
+            **{k: ops.convert_to_tensor(v) for k, v in inp.items()})
+      else:
+        self._converted_func(*map(ops.convert_to_tensor, inp))
+
+    def _save_calibration_table(node):
+      calibration_table = gen_trt_ops.get_calibration_data_op(
+          _get_canonical_engine_name(node.name))
+      node.attr["calibration_data"].s = calibration_table.numpy()
+
+    self._for_each_trt_node(self._converted_graph_def,
+                            _save_calibration_table)
+
+    # Rebuild the function since calibration has changed the graph.
+    self._converted_func = self._rebuild_func(self._converted_func)
+
   # TODO(laigd): provide a utility function to optimize a ConcreteFunction and
   # use it here (b/124792963).
   def convert(self, calibration_input_fn=None):
@@ -1191,23 +1212,11 @@ class TrtGraphConverterV2(object):
         func.structured_input_signature)
 
     if self._need_calibration:
-      for inp in calibration_input_fn():
-        if isinstance(inp, dict):
-          self._converted_func(
-              **{k: ops.convert_to_tensor(v) for k, v in inp.items()})
-        else:
-          self._converted_func(*map(ops.convert_to_tensor, inp))
-
-      def _save_calibration_table(node):
-        calibration_table = gen_trt_ops.get_calibration_data_op(
-            _get_canonical_engine_name(node.name))
-        node.attr["calibration_data"].s = calibration_table.numpy()
-
-      self._for_each_trt_node(self._converted_graph_def,
-                              _save_calibration_table)
-
-      # Rebuild the function since calibration has changed the graph.
-      self._converted_func = self._rebuild_func(self._converted_func)
+      # Execute calibration here only if not in dynamic shape mode
+      if not self._need_trt_profiles():
+        self._execute_calibration(calibration_input_fn)
+      else:
+        self._calibration_input_fn = calibration_input_fn
 
     self._converted = True
     return self._converted_func
@@ -1237,6 +1246,9 @@ class TrtGraphConverterV2(object):
     if not input_fn:
       raise RuntimeError("input_fn is None. Method build() needs input_fn "
                          "to be specified in order to build TensorRT engines")
+    if self._need_calibration and self._need_trt_profiles() and \
+        self._calibration_input_fn == None:
+        raise RuntimeError("Need to call convert() first")
 
     def _set_profile_generation_mode(value, node):
       node.attr["_profile_generation_mode"].b = value
@@ -1278,6 +1290,11 @@ class TrtGraphConverterV2(object):
             **{k: ops.convert_to_tensor(v) for k, v in first_input.items()})
       else:
         self._converted_func(*map(ops.convert_to_tensor, first_input))
+
+      # Run calibration if required, this would have been skipped in
+      # the convert step
+      if self._need_calibration:
+        self._execute_calibration(self._calibration_input_fn)
 
     self._build_called_once = True
 

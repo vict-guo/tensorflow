@@ -1447,15 +1447,18 @@ Status Converter::BuildCudaEngine(
   } else if (precision_mode_ == TrtPrecisionMode::INT8) {
     builder_config->setFlag(nvinfer1::BuilderFlag::kFP16);
     builder_config->setFlag(nvinfer1::BuilderFlag::kINT8);
+  }
+  if (!use_implicit_batch_ && profiles) {
+    VLOG(1) << "Setting profiles inside BuildCudaEngine";
+    TF_RETURN_IF_ERROR(profiles->ConfigureBuilder(
+        trt_builder_.get(), builder_config.get(), network()));
+  }
+  if (precision_mode_ == TrtPrecisionMode::INT8) {
     if (use_calibration_) {
       builder_config->setInt8Calibrator(calibrator);
     } else {
       builder_config->setInt8Calibrator(nullptr);
     }
-  }
-  if (!use_implicit_batch_ && profiles) {
-    TF_RETURN_IF_ERROR(profiles->ConfigureBuilder(
-        trt_builder_.get(), builder_config.get(), network()));
   }
 
   string precision_mode_str;

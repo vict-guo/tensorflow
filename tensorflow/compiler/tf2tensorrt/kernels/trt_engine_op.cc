@@ -499,11 +499,6 @@ TRTEngineOp::TRTEngineOp(OpKernelConstruction* context)
   VLOG(2) << "TRTEngineOp has_dynamic_shape_input_: "
           << has_dynamic_shape_input_;
 
-  if (has_dynamic_shape_input_ && !use_implicit_batch_) {
-    OP_REQUIRES(context, !calibration_mode_,
-                errors::InvalidArgument(
-                    "Dynamic shape mode does not support calibration"));
-  }
 }
 
 // Copies input tensor ctx->input(i) (which is in device memory) to the host,
@@ -774,6 +769,63 @@ void TRTEngineOp::ComputeAsync(OpKernelContext* ctx,
                        dummy_async_helper);
   core::ScopedUnref unref_cache_res(cache_res);
 
+  // Get shapes of inputs to engine.
+  std::vector<TensorShape> input_concrete_shapes;
+  input_concrete_shapes.reserve(ctx->num_inputs());
+  for (int i = 0; i < ctx->num_inputs(); ++i) {
+    input_concrete_shapes.push_back(ctx->input(i).shape());
+  }
+
+  Status verify_input_shape_status = VerifyInputShapes(input_concrete_shapes);
+  // TODO(bixia): Fix the segmentation.
+  if (!verify_input_shape_status.ok()) {
+    LOG_FIRST_FEW_WARNING_WITH_PREFIX
+        << "Running native segment for" << name()
+        << " due to failure in verifying input shapes: "
+        << verify_input_shape_status.error_message();
+    ExecuteNativeSegment(ctx, async_helper);
+    return;
+  }
+
+  if (!use_implicit_batch_ &&
+      (has_dynamic_shape_input_ || cache_res->profiles_.HasShapeTensor())) {// make sure when we are not in dynamic shape we never enter this code
+    OP_REQUIRES_OK_ASYNC(ctx, cache_res->profiles_.CollectShapeValues(ctx),
+                         dummy_async_helper);
+    if (profile_generation_mode_) {
+      // Collecting new shapes for profiles can be only done once. After the
+      // shapes are converted to TRT profiles, no shapes can be collected
+      // anymore.
+      VLOG(2) << "Collecting shapes for Profile";
+      OP_REQUIRES_ASYNC(ctx, cache_res->profiles_.GetNumProfiles() == 0,
+                        errors::Unimplemented("Cannot collect new shapes when "
+                                              "profiles are already created."),
+                        dummy_async_helper);
+      // Just collect the input shape info and return. The shapes are used to
+      // generate optimization profiles during engine creation.
+      cache_res->profiles_.AddShape(input_concrete_shapes);
+      VLOG(1) << "Native segment is used during collecting shapes for profiles";
+      ExecuteNativeSegment(ctx, async_helper);
+      return;
+    } else if (cache_res->profiles_.GetNumProfiles() == 0 && !static_engine_) {
+      VLOG(2) << "Executing InitProfiles";
+      // Add current shape if we did not collect any shapes so far.
+      if (!cache_res->profiles_.HasShape()) {
+        cache_res->profiles_.AddShape(input_concrete_shapes);
+      }
+      // Create profiles out of collected shapes during profile generation.
+      cache_res->profiles_.InitProfiles(input_partial_shapes_,
+                                        profile_strategy_);
+      // Just execute native segment and return if calibration still needs
+      // to run.
+      if (calibration_mode_ && cache_res->cache_.size() == 0) {
+        VLOG(1) << "Native segment is used after creating optimization profile"
+                << " when in calibration mode";
+        ExecuteNativeSegment(ctx, async_helper);
+        return;
+      }
+    }
+  }
+
   // Run calibration if in int8+calibration mode.
   // * Logic in TF 1.x:
   //   - During conversion: calibration_mode_ is true and cache size is 0, so it
@@ -796,6 +848,11 @@ void TRTEngineOp::ComputeAsync(OpKernelContext* ctx,
       // TODO(laigd): better encapsulation.
       mutex_lock lock(engine_mutex_);
       if (!cache_res->calib_ctx_) {
+        //WHEN IN DYNAMIC SHAPE MODE ADD PROFILES
+        if (!use_implicit_batch_ &&
+            (has_dynamic_shape_input_ || cache_res->profiles_.HasShapeTensor())) {
+          cache_res->profiles_.InitCalibProfile(input_concrete_shapes);
+        }
         OP_REQUIRES_OK_ASYNC(ctx, AllocateCalibrationResources(ctx, cache_res),
                              dummy_async_helper);
       }
@@ -806,52 +863,6 @@ void TRTEngineOp::ComputeAsync(OpKernelContext* ctx,
     return;
   }
 
-  // Get shapes of inputs to engine.
-  std::vector<TensorShape> input_concrete_shapes;
-  input_concrete_shapes.reserve(ctx->num_inputs());
-  for (int i = 0; i < ctx->num_inputs(); ++i) {
-    input_concrete_shapes.push_back(ctx->input(i).shape());
-  }
-
-  Status verify_input_shape_status = VerifyInputShapes(input_concrete_shapes);
-  // TODO(bixia): Fix the segmentation.
-  if (!verify_input_shape_status.ok()) {
-    LOG_FIRST_FEW_WARNING_WITH_PREFIX
-        << "Running native segment for" << name()
-        << " due to failure in verifying input shapes: "
-        << verify_input_shape_status.error_message();
-    ExecuteNativeSegment(ctx, async_helper);
-    return;
-  }
-
-  if (!use_implicit_batch_ &&
-      (has_dynamic_shape_input_ || cache_res->profiles_.HasShapeTensor())) {
-    OP_REQUIRES_OK_ASYNC(ctx, cache_res->profiles_.CollectShapeValues(ctx),
-                         dummy_async_helper);
-    if (profile_generation_mode_) {
-      // Collecting new shapes for profiles can be only done once. After the
-      // shapes are converted to TRT profiles, no shapes can be collected
-      // anymore.
-      OP_REQUIRES_ASYNC(ctx, cache_res->profiles_.GetNumProfiles() == 0,
-                        errors::Unimplemented("Cannot collect new shapes when "
-                                              "profiles are already created."),
-                        dummy_async_helper);
-      // Just collect the input shape info and return. The shapes are used to
-      // generate optimization profiles during engine creation.
-      cache_res->profiles_.AddShape(input_concrete_shapes);
-      VLOG(1) << "Native segment is used during collecting shapes for profiles";
-      ExecuteNativeSegment(ctx, async_helper);
-      return;
-    } else if (cache_res->profiles_.GetNumProfiles() == 0 && !static_engine_) {
-      // Add current shape if we did not collect any shapes so far.
-      if (!cache_res->profiles_.HasShape()) {
-        cache_res->profiles_.AddShape(input_concrete_shapes);
-      }
-      // Create profiles out of collected shapes during profile generation.
-      cache_res->profiles_.InitProfiles(input_partial_shapes_,
-                                        profile_strategy_);
-    }
-  }
   StatusOr<std::pair<EngineContext*, int>> status =
       GetEngine(input_concrete_shapes, ctx, cache_res);
   OP_REQUIRES_OK_ASYNC(ctx, status.status(), dummy_async_helper);
@@ -1276,7 +1287,7 @@ Status TRTEngineOp::AllocateCalibrationResources(
         partial_shapes, &cache_res->GetLogger(), cache_res->allocator_.get(),
         cres->calibrator_.get(), &cres->engine_, /*use_calibration=*/true,
         this->use_implicit_batch_, /*convert_successfully=*/nullptr,
-        /*profiles=*/nullptr, name());
+        /*profiles=*/&cache_res->profiles_, name());
     if (!s.ok()) {
       LOG(ERROR) << "Calibration failed: " << s;
       cres->calibrator_->setDone();  // Ignore further pushes
@@ -1285,10 +1296,22 @@ Status TRTEngineOp::AllocateCalibrationResources(
       // dump it out during conversion for TF 2.0.
       mutex_lock lock(this->engine_mutex_);
       this->calibrator_ = std::move(cres->calibrator_);
-      ExecutionContext context = ExecutionContext::Create(cres->engine_.get());
-      cache_res->cache_.emplace(
+      if (!use_implicit_batch_ &&
+            (has_dynamic_shape_input_ || cache_res->profiles_.HasShapeTensor())) {
+        VLOG(2) << "IN DYNAMIC SHAPE CALIBRATION NOW";
+        std::vector<ExecutionContext> exec_contexts;
+        auto calib_result = cache_res->profiles_.CreateExecutionContexts(
+                            cres->engine_.get(), &exec_contexts);
+        cache_res->cache_.emplace(shapes,
+                      absl::make_unique<EngineContext>(std::move(cres->engine_),
+                                                   std::move(exec_contexts)));
+      }
+      else {
+        ExecutionContext context = ExecutionContext::Create(cres->engine_.get());
+        cache_res->cache_.emplace(
           shapes, absl::make_unique<EngineContext>(std::move(cres->engine_),
                                                    std::move(context)));
+      }
     }
 
     VLOG(1) << "Calibration loop terminated " << this->name();
